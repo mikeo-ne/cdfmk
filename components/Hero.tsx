@@ -94,7 +94,8 @@ export function Hero({ endorsements, backendEnabled = false, source = null }: He
           </div>
 
           <h1 className="font-display text-4xl uppercase leading-[1.02] tracking-tight text-white sm:text-5xl lg:text-6xl">
-            Stand with <span className="text-gold-gradient">CDF Muhoozi</span>
+            Stand with CDF General
+            <span className="block text-gold-gradient">Muhoozi Kainerugaba</span>
             <span className="mt-2 block text-2xl text-slate-200 sm:text-3xl lg:text-4xl">
               Add Your Signature for 2031
             </span>
