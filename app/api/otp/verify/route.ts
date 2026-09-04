@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { OtpVerifyPayload, OtpVerifyResponse } from "@/lib/types";
-import { normalizeUgandaPhone } from "@/lib/utils";
+import { e164UgandaPhone } from "@/lib/utils";
 import { getStore } from "@/lib/server/store";
 import {
   OTP_MAX_ATTEMPTS,
@@ -26,7 +26,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Invalid request body." }, { status: 400 });
   }
 
-  const phone = normalizeUgandaPhone(body.phone ?? "");
+  const phone = e164UgandaPhone(body.phone ?? "");
   const code = (body.code ?? "").replace(/\D/g, "").slice(0, 4);
   if (!phone) {
     return NextResponse.json({ ok: false, error: "Invalid phone number." }, { status: 400 });

@@ -1,108 +1,186 @@
 -- =====================================================================
 -- CDF Muhoozi 2031 — National Endorsement & Digital Signature Portal
--- Supabase schema. Run in the Supabase SQL Editor (or `supabase db push`).
+-- Supabase schema. Run top-to-bottom in the Supabase SQL Editor.
 --
--- Tables:
---   supporters       – one row per verified endorser
---   signatures       – the digital signature artefact attached to a supporter
---   otp_verifications – SMS one-time-password audit/verification records
+-- Design:
+--   endorsements            – one row per endorser (identity, geo, storage
+--                             signature URL, OTP status, anti-fraud metadata)
+--   storage bucket "signatures" – public SVG signature artefacts
+--   otp_verifications       – server-side SMS OTP audit records (hashed codes)
+--   public_supporter_wall   – privacy-masked public feed (view)
+--   get_regional_endorsement_stats() – district tallies (RPC)
 -- =====================================================================
 
+-- Enable UUID extension if not enabled
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Create Enum for Verification Status
+DO $$ BEGIN
+    CREATE TYPE endorsement_status AS ENUM ('pending', 'verified', 'flagged', 'rejected');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 -- ---------------------------------------------------------------------
--- supporters
+-- 1. ENDORSEMENTS TABLE
 -- ---------------------------------------------------------------------
-create table if not exists public.supporters (
-  id              uuid primary key default gen_random_uuid(),
-  full_name       text not null,
-  -- Normalized display form, e.g. "+256 772 123 456"
-  phone           text not null,
-  -- 14-character Uganda National Identification Number
-  nin             text not null,
-  district        text not null,
-  region          text not null check (region in ('Central', 'Western', 'Northern', 'Eastern')),
-  sub_county      text not null default '',
-  verified        boolean not null default false,
-  verification_method text not null default 'sms' check (verification_method in ('sms', 'demo')),
-  created_at      timestamptz not null default now()
+CREATE TABLE IF NOT EXISTS public.endorsements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- Supporter Identity Details
+    full_name TEXT NOT NULL,
+    phone_number VARCHAR(15) NOT NULL,  -- stored as compact E.164, e.g. +256772123456
+    nin VARCHAR(14) NOT NULL,           -- National Identification Number
+
+    -- Geographic Information
+    district TEXT NOT NULL,
+    sub_county TEXT,
+    village TEXT,
+
+    -- Signature Reference (Supabase Storage public URL)
+    signature_url TEXT NOT NULL,
+
+    -- Verification & Anti-Fraud Metadata
+    status endorsement_status DEFAULT 'pending',
+    otp_verified BOOLEAN DEFAULT FALSE,
+    ip_address INET,
+    user_agent TEXT,
+
+    -- Timestamps
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+    -- STRICT DUPLICATE PREVENTION CONSTRAINTS
+    CONSTRAINT unique_nin UNIQUE (nin),
+    CONSTRAINT unique_phone UNIQUE (phone_number)
 );
 
--- Anti-duplicate guarantees: one endorsement per NIN and per phone number.
-create unique index if not exists supporters_nin_key      on public.supporters (upper(nin));
-create unique index if not exists supporters_phone_key    on public.supporters (regexp_replace(phone, '\D', '', 'g'));
-create index        if not exists supporters_district_idx on public.supporters (district);
-create index        if not exists supporters_region_idx   on public.supporters (region);
-create index        if not exists supporters_created_idx  on public.supporters (created_at desc);
+-- 2. INDEXES FOR HIGH-PERFORMANCE SEARCHING & ANALYTICS
+CREATE INDEX IF NOT EXISTS idx_endorsements_district ON public.endorsements(district);
+CREATE INDEX IF NOT EXISTS idx_endorsements_status ON public.endorsements(status);
+CREATE INDEX IF NOT EXISTS idx_endorsements_created_at ON public.endorsements(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_endorsements_nin ON public.endorsements(nin);
+
+-- 3. AUTO-UPDATE TIMESTAMP TRIGGER
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS update_endorsements_updated_at ON public.endorsements;
+CREATE TRIGGER update_endorsements_updated_at
+BEFORE UPDATE ON public.endorsements
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
 
 -- ---------------------------------------------------------------------
--- signatures
+-- 4. OTP VERIFICATIONS (server-side Africa's Talking SMS flow)
+--    Codes are stored ONLY as SHA-256 hashes, never in plain text.
 -- ---------------------------------------------------------------------
-create table if not exists public.signatures (
-  id              uuid primary key default gen_random_uuid(),
-  supporter_id    uuid not null references public.supporters(id) on delete cascade,
-  -- Standalone SVG markup of the captured signature.
-  svg             text not null,
-  -- 'drawn' (touch/mouse canvas) or 'typed' (cursive script).
-  mode            text not null check (mode in ('drawn', 'typed')),
-  -- Virtual canvas dimensions the SVG coordinates are relative to.
-  canvas_width    integer not null default 600,
-  canvas_height   integer not null default 220,
-  terms_accepted  boolean not null default true,
-  ip_hash         text,                      -- optional privacy-preserving audit
-  created_at      timestamptz not null default now()
+CREATE TABLE IF NOT EXISTS public.otp_verifications (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    phone        VARCHAR(15) NOT NULL,          -- E.164 the code was sent to
+    code_hash    TEXT NOT NULL,                 -- sha256(phone:code)
+    status       TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (status IN ('pending', 'verified', 'expired', 'cancelled')),
+    attempts     SMALLINT NOT NULL DEFAULT 0,
+    sms_gateway  TEXT NOT NULL DEFAULT 'africastalking',
+    sms_status   TEXT,
+    expires_at   TIMESTAMPTZ NOT NULL,
+    verified_at  TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-create index if not exists signatures_supporter_idx on public.signatures (supporter_id);
+CREATE INDEX IF NOT EXISTS idx_otp_phone ON public.otp_verifications (phone, created_at DESC);
 
 -- ---------------------------------------------------------------------
--- otp_verifications  (real Africa's Talking SMS flow)
+-- 5. SIGNATURES STORAGE BUCKET (public, 2 MB max, images + SVG)
 -- ---------------------------------------------------------------------
-create table if not exists public.otp_verifications (
-  id              uuid primary key default gen_random_uuid(),
-  phone           text not null,             -- normalized "+256 772 ..."
-  code_hash       text not null,             -- sha256 hex of the OTP (never store raw)
-  status          text not null default 'pending'
-                  check (status in ('pending', 'verified', 'expired', 'cancelled')),
-  attempts        smallint not null default 0,
-  sms_gateway     text not null default 'africastalking',
-  sms_status      text,                      -- provider message status, e.g. Sent / queued
-  expires_at      timestamptz not null,
-  verified_at     timestamptz,
-  created_at      timestamptz not null default now()
-);
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+    'signatures',
+    'signatures',
+    true,
+    2097152, -- 2MB max file size
+    ARRAY['image/png', 'image/jpeg', 'image/svg+xml']
+)
+ON CONFLICT (id) DO NOTHING;
 
-create index if not exists otp_phone_idx on public.otp_verifications (phone, created_at desc);
+-- STORAGE RLS POLICIES
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+
+-- Policy 1: Allow public/unauthenticated users to upload signature files
+DROP POLICY IF EXISTS "Allow public signature uploads" ON storage.objects;
+CREATE POLICY "Allow public signature uploads"
+ON storage.objects FOR INSERT TO public
+WITH CHECK (bucket_id = 'signatures');
+
+-- Policy 2: Allow public read access to signature images
+DROP POLICY IF EXISTS "Allow public viewing of signatures" ON storage.objects;
+CREATE POLICY "Allow public viewing of signatures"
+ON storage.objects FOR SELECT TO public
+USING (bucket_id = 'signatures');
 
 -- ---------------------------------------------------------------------
--- Convenience view: latest signature per supporter (used by the admin panel)
+-- 6. ENDORSEMENTS ROW LEVEL SECURITY
+--    (The app's API routes also write with the service-role key after OTP;
+--     these policies additionally permit direct client submission.)
 -- ---------------------------------------------------------------------
-create or replace view public.supporters_with_signatures as
-select
-  s.*,
-  sig.svg          as signature_svg,
-  sig.mode         as signature_mode,
-  sig.terms_accepted,
-  (select count(*) from public.otp_verifications o
-     where o.phone = s.phone) as otp_requests
-from public.supporters s
-left join lateral (
-  select * from public.signatures sig
-  where sig.supporter_id = s.id
-  order by sig.created_at desc
-  limit 1
-) sig on true;
+ALTER TABLE public.endorsements ENABLE ROW LEVEL SECURITY;
 
--- =====================================================================
--- Row Level Security
--- The app's API routes use the SERVICE_ROLE key (server-side only), which
--- bypasses RLS. The public anon key is intentionally NOT granted write
--- access — all writes must flow through the verified OTP endpoints.
--- Enable RLS with no anon policies as a defence-in-depth measure.
--- =====================================================================
-alter table public.supporters        enable row level security;
-alter table public.signatures        enable row level security;
-alter table public.otp_verifications enable row level security;
+-- POLICY 1: Public can submit an endorsement
+DROP POLICY IF EXISTS "Enable public endorsement submission" ON public.endorsements;
+CREATE POLICY "Enable public endorsement submission"
+ON public.endorsements
+FOR INSERT
+TO anon, authenticated
+WITH CHECK (true);
 
--- Read-only public tally: authenticated service role only. Drop or restrict
--- if a public SDK feed is ever needed, and instead create a policy such as:
---   create policy "public read supporters" on public.supporters
---     for select to anon using (true);
+-- POLICY 2: Authenticated Campaign Admins have full access
+DROP POLICY IF EXISTS "Admins full access to endorsements" ON public.endorsements;
+CREATE POLICY "Admins full access to endorsements"
+ON public.endorsements
+FOR ALL
+TO authenticated
+USING (true)
+WITH CHECK (true);
+
+-- OTP records are server-only; enable RLS with no anon policies.
+ALTER TABLE public.otp_verifications ENABLE ROW LEVEL SECURITY;
+
+-- ---------------------------------------------------------------------
+-- 7. PUBLIC SUPPORTER WALL VIEW (masked identities, verified only)
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE VIEW public.public_supporter_wall AS
+SELECT
+    id,
+    -- Masks "John Doe" into "J*** D***" for public privacy
+    regexp_replace(full_name, '(\w)\w+', '\1***', 'g') AS masked_name,
+    district,
+    created_at
+FROM public.endorsements
+WHERE status = 'verified' OR otp_verified = true
+ORDER BY created_at DESC;
+
+-- Grant public select permissions to the view
+GRANT SELECT ON public.public_supporter_wall TO anon, authenticated;
+
+-- ---------------------------------------------------------------------
+-- 8. REGIONAL / DISTRICT ENDORSEMENT STATS RPC
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION get_regional_endorsement_stats()
+RETURNS TABLE (district TEXT, total_endorsements BIGINT)
+LANGUAGE sql
+SECURITY DEFINER
+AS $$
+    SELECT
+        district,
+        COUNT(id) AS total_endorsements
+    FROM public.endorsements
+    WHERE status = 'verified' OR otp_verified = true
+    GROUP BY district
+    ORDER BY total_endorsements DESC;
+$$;
+
+GRANT EXECUTE ON FUNCTION get_regional_endorsement_stats() TO anon, authenticated;

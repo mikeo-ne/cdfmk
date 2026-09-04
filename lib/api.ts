@@ -1,10 +1,12 @@
 "use client";
 
 import type {
+  DistrictStat,
   Endorsement,
   EndorsementCreatePayload,
   OtpRequestResponse,
   OtpVerifyResponse,
+  WallEntry,
 } from "./types";
 import { isBackendEnabled } from "./config";
 
@@ -67,4 +69,16 @@ export async function createEndorsement(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+/** Privacy-masked public supporter wall (from public_supporter_wall view). */
+export async function fetchSupporterWall(): Promise<WallEntry[]> {
+  const data = await jsonFetch<{ entries: WallEntry[] }>("/api/supporter-wall");
+  return data.entries;
+}
+
+/** Verified endorsements per district (from get_regional_endorsement_stats RPC). */
+export async function fetchRegionalStats(): Promise<DistrictStat[]> {
+  const data = await jsonFetch<{ stats: DistrictStat[] }>("/api/stats");
+  return data.stats;
 }

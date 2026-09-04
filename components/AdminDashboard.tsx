@@ -24,7 +24,7 @@ import {
   phoneKey,
   classNames,
 } from "@/lib/utils";
-import { svgToDataUrl } from "@/lib/signature";
+import { resolveSignatureSrc } from "@/lib/signature";
 import { useToast } from "./Toaster";
 import { fetchEndorsements, isBackendEnabled } from "@/lib/api";
 
@@ -237,7 +237,7 @@ export function AdminDashboard({ endorsements, onRefresh }: AdminDashboardProps)
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={svgToDataUrl(e.signatureSvg)}
+                      src={resolveSignatureSrc(e.signatureSvg)}
                       alt="Signature preview"
                       className="h-full w-full object-contain p-1"
                     />
@@ -326,7 +326,7 @@ export function AdminDashboard({ endorsements, onRefresh }: AdminDashboardProps)
               <div className="mt-5 rounded-xl border-2 border-dashed border-slate-300 bg-white p-4">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={svgToDataUrl(preview.signatureSvg)}
+                  src={resolveSignatureSrc(preview.signatureSvg)}
                   alt="Attached digital signature"
                   className="mx-auto h-auto w-full max-w-md"
                 />

@@ -1,7 +1,19 @@
 import "server-only";
-import type { Endorsement, Region } from "@/lib/types";
+import type {
+  DistrictStat,
+  Endorsement,
+  Region,
+  VerificationStatus,
+  WallEntry,
+} from "@/lib/types";
 import { buildSeedEndorsements } from "@/lib/seeds";
-import { phoneKey } from "@/lib/utils";
+import {
+  formatDisplayFromE164,
+  maskName,
+  phoneKey,
+  regionForDistrict,
+} from "@/lib/utils";
+import { DISTRICT_REGION } from "@/lib/data";
 import { getSupabaseAdmin } from "./supabaseAdmin";
 
 export class DuplicateError extends Error {
@@ -13,24 +25,29 @@ export class DuplicateError extends Error {
   }
 }
 
-export interface CreateSupporterInput {
+export interface ListQuery {
+  search?: string;
+  status?: "all" | VerificationStatus;
+  region?: string;
+}
+
+export interface CreateEndorsementInput {
   fullName: string;
+  /** Display phone, e.g. "+256 772 123 456". */
   phone: string;
+  /** E.164 phone, e.g. "+256772123456" (stored + used for SMS). */
+  phoneE164: string;
   nin: string;
   district: string;
-  region: Region;
   subCounty: string;
+  village?: string;
   signatureSvg: string;
   signatureMode: "drawn" | "typed";
   termsAccepted: boolean;
   verified: boolean;
   verificationMethod: "sms" | "demo";
-}
-
-export interface ListQuery {
-  search?: string;
-  status?: "all" | "verified" | "pending";
-  region?: string;
+  ipAddress?: string | null;
+  userAgent?: string | null;
 }
 
 export interface OtpRecord {
@@ -47,7 +64,9 @@ export interface OtpRecord {
 export interface EndorsementStore {
   readonly kind: "supabase" | "memory";
   list(query?: ListQuery): Promise<Endorsement[]>;
-  create(input: CreateSupporterInput): Promise<Endorsement>;
+  wall(limit?: number): Promise<WallEntry[]>;
+  stats(): Promise<DistrictStat[]>;
+  create(input: CreateEndorsementInput): Promise<Endorsement>;
   createOtp(input: {
     phone: string;
     codeHash: string;
@@ -55,43 +74,58 @@ export interface EndorsementStore {
     smsStatus?: string | null;
   }): Promise<OtpRecord>;
   getLatestPendingOtp(phone: string): Promise<OtpRecord | null>;
-  updateOtp(id: string, patch: Partial<Pick<OtpRecord, "status" | "attempts">> & { verifiedAt?: Date }): Promise<void>;
+  updateOtp(
+    id: string,
+    patch: Partial<Pick<OtpRecord, "status" | "attempts">> & { verifiedAt?: Date }
+  ): Promise<void>;
 }
 
 /* ------------------------------------------------------------------ */
-/* Supabase implementation                                             */
+/* Shared helpers                                                      */
 /* ------------------------------------------------------------------ */
 
-type DbSupporter = {
+function isDuplicateError(err: unknown): DuplicateError | null {
+  const e = err as { code?: string; message?: string; details?: string } | null;
+  if (!e || e.code !== "23505") return null;
+  const text = `${e.message ?? ""} ${e.details ?? ""}`;
+  if (/unique_nin|nin/i.test(text)) return new DuplicateError("nin");
+  if (/unique_phone|phone/i.test(text)) return new DuplicateError("phone");
+  return new DuplicateError("nin");
+}
+
+/* ------------------------------------------------------------------ */
+/* Supabase implementation (endorsements table + Storage bucket)       */
+/* ------------------------------------------------------------------ */
+
+type DbEndorsement = {
   id: string;
   full_name: string;
-  phone: string;
+  phone_number: string;
   nin: string;
   district: string;
-  region: Region;
-  sub_county: string;
-  verified: boolean;
-  verification_method: string;
+  sub_county: string | null;
+  village: string | null;
+  signature_url: string;
+  status: VerificationStatus | "flagged" | "rejected";
+  otp_verified: boolean;
   created_at: string;
 };
 
-function rowToEndorsement(
-  s: DbSupporter,
-  signature?: { svg: string; mode: "drawn" | "typed" } | null
-): Endorsement {
+function rowToEndorsement(r: DbEndorsement): Endorsement {
   return {
-    id: s.id,
-    fullName: s.full_name,
-    phone: s.phone,
-    nin: s.nin,
-    district: s.district,
-    region: s.region,
-    subCounty: s.sub_county,
-    signatureSvg: signature?.svg ?? "",
-    signatureMode: signature?.mode ?? "drawn",
+    id: r.id,
+    fullName: r.full_name,
+    phone: formatDisplayFromE164(r.phone_number),
+    nin: r.nin,
+    district: r.district,
+    region: regionForDistrict(r.district),
+    subCounty: r.sub_county || r.village || "",
+    // Stored as a public Supabase Storage URL (rendered directly in <img>).
+    signatureSvg: r.signature_url,
+    signatureMode: "drawn",
     termsAccepted: true,
-    verified: s.verified,
-    createdAt: new Date(s.created_at).getTime(),
+    verified: r.status === "verified" || r.otp_verified,
+    createdAt: new Date(r.created_at).getTime(),
   };
 }
 
@@ -101,68 +135,102 @@ class SupabaseStore implements EndorsementStore {
   async list(query?: ListQuery): Promise<Endorsement[]> {
     const supabase = getSupabaseAdmin()!;
     let req = supabase
-      .from("supporters_with_signatures")
+      .from("endorsements")
       .select("*")
       .order("created_at", { ascending: false });
-    if (query?.region && query.region !== "all") req = req.eq("region", query.region);
-    if (query?.status && query.status !== "all") req = req.eq("verified", query.status === "verified");
+    if (query?.region && query.region !== "all") {
+      // Region is derived from district — constrain via the known districts.
+      const districts = Object.entries(DISTRICT_REGION)
+        .filter(([, reg]) => reg === query.region)
+        .map(([d]) => d);
+      req = req.in("district", districts);
+    }
+    if (query?.status && query.status !== "all") {
+      req = req.eq("otp_verified", query.status === "verified");
+    }
     if (query?.search) {
       const q = `%${query.search}%`;
       req = req.or(
-        `full_name.ilike.${q},nin.ilike.${q},district.ilike.${q},sub_county.ilike.${q},phone.ilike.${q}`
+        `full_name.ilike.${q},nin.ilike.${q},district.ilike.${q},sub_county.ilike.${q},phone_number.ilike.${q}`
       );
     }
     const { data, error } = await req.limit(500);
     if (error) throw error;
-    return (data ?? []).map((r) =>
-      rowToEndorsement(r as DbSupporter, {
-        svg: (r as { signature_svg?: string }).signature_svg ?? "",
-        mode: ((r as { signature_mode?: "drawn" | "typed" }).signature_mode ?? "drawn"),
-      })
-    );
+    return (data ?? []).map((r) => rowToEndorsement(r as DbEndorsement));
   }
 
-  async create(input: CreateSupporterInput): Promise<Endorsement> {
+  async wall(limit = 50): Promise<WallEntry[]> {
     const supabase = getSupabaseAdmin()!;
-    const { data: supporter, error } = await supabase
-      .from("supporters")
+    const { data, error } = await supabase
+      .from("public_supporter_wall")
+      .select("*")
+      .limit(limit);
+    if (error) throw error;
+    return (data ?? []).map((r: Record<string, unknown>) => ({
+      id: r.id as string,
+      maskedName: (r.masked_name as string) ?? "",
+      district: r.district as string,
+      createdAt: new Date(r.created_at as string).getTime(),
+    }));
+  }
+
+  async stats(): Promise<DistrictStat[]> {
+    const supabase = getSupabaseAdmin()!;
+    const { data, error } = await supabase.rpc("get_regional_endorsement_stats");
+    if (error) throw error;
+    return (data ?? []).map((r: Record<string, unknown>) => ({
+      district: r.district as string,
+      totalEndorsements: Number(r.total_endorsements ?? r.totalEndorsements ?? 0),
+    }));
+  }
+
+  async create(input: CreateEndorsementInput): Promise<Endorsement> {
+    const supabase = getSupabaseAdmin()!;
+
+    // 1) Upload the signature SVG to the public "signatures" Storage bucket.
+    const fileName = `sig-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.svg`;
+    const blob = new Blob([input.signatureSvg], { type: "image/svg+xml" });
+    const { error: upErr } = await supabase.storage
+      .from("signatures")
+      .upload(fileName, blob, { contentType: "image/svg+xml", upsert: false });
+    if (upErr) throw upErr;
+    const { data: pub } = supabase.storage.from("signatures").getPublicUrl(fileName);
+    const signatureUrl = pub.publicUrl;
+
+    // 2) Insert the endorsement row.
+    const { data, error } = await supabase
+      .from("endorsements")
       .insert({
         full_name: input.fullName,
-        phone: input.phone,
+        phone_number: input.phoneE164,
         nin: input.nin.toUpperCase(),
         district: input.district,
-        region: input.region,
-        sub_county: input.subCounty,
-        verified: input.verified,
-        verification_method: input.verificationMethod,
+        sub_county: input.subCounty || null,
+        village: input.village || null,
+        signature_url: signatureUrl,
+        status: input.verified ? "verified" : "pending",
+        otp_verified: input.verified,
+        ip_address: input.ipAddress ?? null,
+        user_agent: input.userAgent ?? null,
       })
       .select("*")
       .single();
 
     if (error) {
-      if (error.code === "23505") {
-        // Unique violation — disambiguate which constraint.
-        const detail = (error.message || "") + " " + (error.details || "");
-        throw new DuplicateError(/nin/i.test(detail) ? "nin" : "phone");
-      }
+      const dup = isDuplicateError(error);
+      if (dup) throw dup;
       throw error;
     }
 
-    const { error: sigError } = await supabase.from("signatures").insert({
-      supporter_id: supporter.id,
-      svg: input.signatureSvg,
-      mode: input.signatureMode,
-      terms_accepted: input.termsAccepted,
-    });
-    if (sigError) throw sigError;
-
-    return rowToEndorsement(supporter as DbSupporter, {
-      svg: input.signatureSvg,
-      mode: input.signatureMode,
-    });
+    return rowToEndorsement(data as DbEndorsement);
   }
 
-  async createOtp(input: { phone: string; codeHash: string; expiresAt: Date; smsStatus?: string | null }): Promise<OtpRecord> {
+  async createOtp(input: {
+    phone: string;
+    codeHash: string;
+    expiresAt: Date;
+    smsStatus?: string | null;
+  }): Promise<OtpRecord> {
     const supabase = getSupabaseAdmin()!;
     const { data, error } = await supabase
       .from("otp_verifications")
@@ -241,7 +309,8 @@ class MemoryStore implements EndorsementStore {
 
   async list(query?: ListQuery): Promise<Endorsement[]> {
     let rows = [...this.endorsements];
-    if (query?.region && query.region !== "all") rows = rows.filter((r) => r.region === query.region);
+    if (query?.region && query.region !== "all")
+      rows = rows.filter((r) => r.region === query.region);
     if (query?.status && query.status !== "all")
       rows = rows.filter((r) => r.verified === (query.status === "verified"));
     if (query?.search) {
@@ -258,10 +327,34 @@ class MemoryStore implements EndorsementStore {
     return rows.sort((a, b) => b.createdAt - a.createdAt).slice(0, 500);
   }
 
-  async create(input: CreateSupporterInput): Promise<Endorsement> {
+  async wall(limit = 50): Promise<WallEntry[]> {
+    return [...this.endorsements]
+      .filter((e) => e.verified)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit)
+      .map((e) => ({
+        id: e.id,
+        maskedName: maskName(e.fullName),
+        district: e.district,
+        createdAt: e.createdAt,
+      }));
+  }
+
+  async stats(): Promise<DistrictStat[]> {
+    const counts = new Map<string, number>();
+    for (const e of this.endorsements) {
+      if (!e.verified) continue;
+      counts.set(e.district, (counts.get(e.district) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([district, totalEndorsements]) => ({ district, totalEndorsements }))
+      .sort((a, b) => b.totalEndorsements - a.totalEndorsements);
+  }
+
+  async create(input: CreateEndorsementInput): Promise<Endorsement> {
     if (this.endorsements.some((e) => e.nin.toUpperCase() === input.nin.toUpperCase()))
       throw new DuplicateError("nin");
-    if (this.endorsements.some((e) => phoneKey(e.phone) === phoneKey(input.phone)))
+    if (this.endorsements.some((e) => phoneKey(e.phone) === phoneKey(input.phoneE164)))
       throw new DuplicateError("phone");
     const record: Endorsement = {
       id: `SRV-${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
@@ -269,7 +362,7 @@ class MemoryStore implements EndorsementStore {
       phone: input.phone,
       nin: input.nin.toUpperCase(),
       district: input.district,
-      region: input.region,
+      region: regionForDistrict(input.district),
       subCounty: input.subCounty,
       signatureSvg: input.signatureSvg,
       signatureMode: input.signatureMode,
@@ -281,7 +374,12 @@ class MemoryStore implements EndorsementStore {
     return record;
   }
 
-  async createOtp(input: { phone: string; codeHash: string; expiresAt: Date; smsStatus?: string | null }): Promise<OtpRecord> {
+  async createOtp(input: {
+    phone: string;
+    codeHash: string;
+    expiresAt: Date;
+    smsStatus?: string | null;
+  }): Promise<OtpRecord> {
     const rec: OtpRecord = {
       id: `otp-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       phone: input.phone,

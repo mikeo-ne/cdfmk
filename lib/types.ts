@@ -82,3 +82,17 @@ export interface EndorsementListResponse {
   endorsements: Endorsement[];
   source: "supabase" | "demo";
 }
+
+/** Masked public supporter-wall entry (maps to public_supporter_wall view). */
+export interface WallEntry {
+  id: string;
+  maskedName: string;
+  district: string;
+  createdAt: number;
+}
+
+/** One row of the get_regional_endorsement_stats() RPC. */
+export interface DistrictStat {
+  district: string;
+  totalEndorsements: number;
+}

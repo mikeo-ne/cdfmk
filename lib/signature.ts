@@ -75,6 +75,18 @@ export function svgToDataUrl(svg: string): string {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
+/**
+ * Normalize a stored signature into an <img src>. Values from Supabase Storage
+ * and existing data URLs are used directly; raw SVG markup is data-URL encoded.
+ */
+export function resolveSignatureSrc(signature: string): string {
+  if (!signature) return "";
+  if (signature.startsWith("data:") || signature.startsWith("http://") || signature.startsWith("https://")) {
+    return signature;
+  }
+  return svgToDataUrl(signature);
+}
+
 /* ------------------------------------------------------------------ */
 /* Deterministic pseudo-random generator (for seeded mock signatures)   */
 /* ------------------------------------------------------------------ */

@@ -24,21 +24,24 @@ npm run build && npm start          # production
 
 ## Backend setup
 
-### 1. Supabase database
+### 1. Supabase database + storage
 
 Run [`supabase/schema.sql`](supabase/schema.sql) in the Supabase SQL Editor. It
 creates:
 
-| Table                | Purpose                                                            |
-| -------------------- | ------------------------------------------------------------------ |
-| `supporters`         | One verified endorser per row; unique indexes on **NIN** and **phone** for anti-duplicate enforcement. |
-| `signatures`         | The attached digital signature as standalone SVG (`drawn` or `typed`), FK-linked to a supporter. |
-| `otp_verifications`  | OTP records (code stored as a SHA-256 hash only), attempts, expiry, gateway status. |
-| `supporters_with_signatures` (view) | Latest signature joined per supporter for the admin panel. |
+| Object                               | Purpose                                                                 |
+| ------------------------------------ | ----------------------------------------------------------------------- |
+| `endorsements` table                 | One endorser per row (name, **`phone_number`** as E.164, **`nin`**, district, sub_county, village, **`signature_url`**, `status` enum, `otp_verified`, `ip_address`, `user_agent`, timestamps) with `UNIQUE(nin)` / `UNIQUE(phone_number)` constraints and an `updated_at` trigger. |
+| `signatures` storage bucket          | Public bucket (2 MB max, `image/svg+xml`/png/jpeg) where each signature SVG is uploaded; its public URL is stored in `signature_url`. |
+| `otp_verifications` table            | Server-only OTP records (code stored as a SHA-256 hash only), attempts, expiry, Africa's Talking status. |
+| `public_supporter_wall` view         | Privacy-masked public feed — names masked by SQL (`J*** D***`), verified rows only. Feeds `GET /api/supporter-wall`. |
+| `get_regional_endorsement_stats()`   | `SECURITY DEFINER` RPC returning verified counts per district. Feeds `GET /api/stats`. |
 
-RLS is enabled on all tables; the API routes use the **service-role key**
-(server-side only), and the public anon key is intentionally granted no write
-access. All writes must pass OTP verification.
+RLS: `endorsements` allows anon insert + authenticated admin access; storage
+bucket allows public upload/read; `otp_verifications` is server-only. The API
+routes additionally write with the service-role key after OTP verification.
+On submission the server uploads the signature SVG to Storage
+(`signatures/sig-<ts>-<rand>.svg`) and inserts a verified `endorsements` row.
 
 Env vars required:
 
@@ -67,13 +70,16 @@ Without these keys the app simulates the gateway and accepts demo code **1234**.
 
 | Method | Endpoint                | Description |
 | ------ | ----------------------- | ----------- |
-| GET    | `/api/endorsements`     | List endorsements (`?search=&status=&region=`), newest first. |
-| POST   | `/api/endorsements`     | Create a verified endorsement + signature. Requires an OTP token (`401` if missing, `409` on duplicate NIN/phone). |
-| POST   | `/api/otp/request`      | Generate a 4-digit OTP, store its hash, send SMS via Africa's Talking (returns `devCode` only in sandbox mode). |
+| GET    | `/api/endorsements`     | Admin/full listing (`?search=&status=&region=`), newest first. |
+| POST   | `/api/endorsements`     | Upload signature SVG to Storage + create a verified `endorsements` row. Requires an OTP token (`401` unverified, `409` duplicate NIN/phone, `400` field errors). Captures `ip_address`/`user_agent`. |
+| POST   | `/api/otp/request`      | Generate a 4-digit OTP (E.164 `+256…`), store its hash, send SMS via Africa's Talking (returns `devCode` only in sandbox mode). |
 | POST   | `/api/otp/verify`       | Verify a code; returns a signed, time-limited token used by the POST above. |
+| GET    | `/api/supporter-wall`   | Masked public feed from the `public_supporter_wall` view. |
+| GET    | `/api/stats`            | Verified counts per district from the `get_regional_endorsement_stats()` RPC. |
 
-Server modules live in `lib/server/` (`store.ts` with Supabase + in-memory
-fallback, `sms.ts`, `otp.ts`, `supabaseAdmin.ts`).
+Server modules live in `lib/server/` (`store.ts` — Supabase + in-memory
+fallback for the `endorsements` table and `signatures` bucket, `sms.ts`,
+`otp.ts`, `supabaseAdmin.ts`).
 
 ## Features
 

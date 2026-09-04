@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Users, TrendingUp, MapPinned, BarChart3, List, Lock } from "lucide-react";
-import type { Endorsement, Region } from "@/lib/types";
-import { REGIONS, REGION_META } from "@/lib/data";
-import { maskName, maskNin, maskPhone, timeAgo, classNames } from "@/lib/utils";
-import { svgToDataUrl } from "@/lib/signature";
+import { useEffect, useMemo, useState } from "react";
+import { Users, TrendingUp, MapPinned, BarChart3, List, Lock, ShieldCheck } from "lucide-react";
+import type { DistrictStat, Endorsement, Region, WallEntry } from "@/lib/types";
+import { DISTRICT_REGION, REGIONS, REGION_META } from "@/lib/data";
+import { classNames, maskName, maskNin, maskPhone, timeAgo } from "@/lib/utils";
+import { resolveSignatureSrc } from "@/lib/signature";
+import { fetchRegionalStats, fetchSupporterWall, isBackendEnabled } from "@/lib/api";
 
 interface SupporterWallProps {
   endorsements: Endorsement[];
@@ -13,19 +14,55 @@ interface SupporterWallProps {
 
 export function SupporterWall({ endorsements }: SupporterWallProps) {
   const [regionView, setRegionView] = useState<"chart" | "table">("chart");
+  const [wall, setWall] = useState<WallEntry[] | null>(null);
+  const [districtStats, setDistrictStats] = useState<DistrictStat[] | null>(null);
 
-  const recent = useMemo(
+  // Live mode: pull the masked public view + district stats RPC, poll for new rows.
+  useEffect(() => {
+    if (!isBackendEnabled) return;
+    let alive = true;
+    const load = async () => {
+      try {
+        const [entries, stats] = await Promise.all([
+          fetchSupporterWall(),
+          fetchRegionalStats(),
+        ]);
+        if (!alive) return;
+        setWall(entries);
+        setDistrictStats(stats);
+      } catch (err) {
+        console.error("Supporter wall data load failed", err);
+      }
+    };
+    void load();
+    const t = setInterval(load, 15000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+
+  const demoRecent = useMemo(
     () => [...endorsements].sort((a, b) => b.createdAt - a.createdAt).slice(0, 12),
     [endorsements]
   );
 
+  const live = isBackendEnabled && wall !== null;
+
   const byRegion = useMemo(() => {
     const counts: Record<Region, number> = { Central: 0, Western: 0, Northern: 0, Eastern: 0 };
-    for (const e of endorsements) counts[e.region] += 1;
+    if (districtStats) {
+      for (const s of districtStats) {
+        const region = DISTRICT_REGION[s.district] ?? "Central";
+        counts[region] += s.totalEndorsements;
+      }
+    } else {
+      for (const e of endorsements) counts[e.region] += 1;
+    }
     return counts;
-  }, [endorsements]);
+  }, [districtStats, endorsements]);
 
-  const total = endorsements.length;
+  const total = Object.values(byRegion).reduce((a, b) => a + b, 0);
   const maxRegion = Math.max(1, ...Object.values(byRegion));
 
   return (
@@ -61,45 +98,84 @@ export function SupporterWall({ endorsements }: SupporterWallProps) {
             </div>
 
             <ul className="space-y-3">
-              {recent.map((e, idx) => (
-                <li
-                  key={e.id}
-                  className={classNames(
-                    "card-dark flex items-center gap-3 p-4 transition-all hover:border-ugyellow/40",
-                    idx === 0 && "border-ugyellow/30"
-                  )}
-                >
-                  {/* signature thumbnail */}
-                  <div className="hidden h-12 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-white p-1 sm:flex">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={svgToDataUrl(e.signatureSvg)}
-                      alt=""
-                      className="h-full w-full object-contain"
-                    />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-bold text-white">
-                      {maskName(e.fullName)}
-                      <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-ugyellow/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ugyellow">
-                        <MapPinned className="h-3 w-3" />
-                        {e.district}
+              {live
+                ? wall.slice(0, 12).map((e, idx) => (
+                    <li
+                      key={e.id}
+                      className={classNames(
+                        "card-dark flex items-center gap-3 p-4 transition-all hover:border-ugyellow/40",
+                        idx === 0 && "border-ugyellow/30"
+                      )}
+                    >
+                      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-ugyellow/15 font-display text-xl text-ugyellow">
+                        {e.maskedName.replace(/[^A-Za-z*]/g, "").charAt(0) || "U"}
                       </span>
-                    </p>
-                    <p className="mt-0.5 truncate text-xs text-slate-400">
-                      {maskPhone(e.phone)} · NIN {maskNin(e.nin)}
-                    </p>
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <p className="text-xs font-semibold text-slate-300">{timeAgo(e.createdAt)}</p>
-                    {e.verified && (
-                      <p className="mt-0.5 flex items-center justify-end gap-1 text-[10px] font-bold uppercase text-green-400">
-                        <Lock className="h-3 w-3" /> Verified
-                      </p>
-                    )}
-                  </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-bold text-white">
+                          {e.maskedName}
+                          <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-ugyellow/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ugyellow">
+                            <MapPinned className="h-3 w-3" />
+                            {e.district}
+                          </span>
+                        </p>
+                        <p className="mt-0.5 truncate text-xs text-slate-400">
+                          Verified signature captured
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className="text-xs font-semibold text-slate-300">{timeAgo(e.createdAt)}</p>
+                        <p className="mt-0.5 flex items-center justify-end gap-1 text-[10px] font-bold uppercase text-green-400">
+                          <Lock className="h-3 w-3" /> Verified
+                        </p>
+                      </div>
+                    </li>
+                  ))
+                : demoRecent.map((e, idx) => (
+                    <li
+                      key={e.id}
+                      className={classNames(
+                        "card-dark flex items-center gap-3 p-4 transition-all hover:border-ugyellow/40",
+                        idx === 0 && "border-ugyellow/30"
+                      )}
+                    >
+                      {/* signature thumbnail */}
+                      <div className="hidden h-12 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-white p-1 sm:flex">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={resolveSignatureSrc(e.signatureSvg)}
+                          alt=""
+                          className="h-full w-full object-contain"
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-bold text-white">
+                          {maskName(e.fullName)}
+                          <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-ugyellow/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ugyellow">
+                            <MapPinned className="h-3 w-3" />
+                            {e.district}
+                          </span>
+                        </p>
+                        <p className="mt-0.5 truncate text-xs text-slate-400">
+                          {maskPhone(e.phone)} · NIN {maskNin(e.nin)}
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className="text-xs font-semibold text-slate-300">{timeAgo(e.createdAt)}</p>
+                        {e.verified && (
+                          <p className="mt-0.5 flex items-center justify-end gap-1 text-[10px] font-bold uppercase text-green-400">
+                            <Lock className="h-3 w-3" /> Verified
+                          </p>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+
+              {live && wall.length === 0 && (
+                <li className="card-dark flex items-center gap-3 p-6 text-sm text-slate-400">
+                  <ShieldCheck className="h-5 w-5 text-ugyellow" />
+                  No verified endorsements yet — be the first to sign for 2031.
                 </li>
-              ))}
+              )}
             </ul>
           </div>
 
@@ -198,13 +274,17 @@ export function SupporterWall({ endorsements }: SupporterWallProps) {
 
               <div className="mt-5 grid grid-cols-2 gap-3 border-t border-white/10 pt-5">
                 <div className="rounded-xl bg-white/5 p-3 text-center">
-                  <p className="font-display text-2xl text-ugyellow">{total.toLocaleString()}</p>
+                  <p className="font-display text-2xl text-ugyellow">
+                    {live ? total.toLocaleString() : endorsements.length.toLocaleString()}
+                  </p>
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                    Captured Here
+                    {live ? "Verified Signatures" : "Captured Here"}
                   </p>
                 </div>
                 <div className="rounded-xl bg-white/5 p-3 text-center">
-                  <p className="font-display text-2xl text-white">10</p>
+                  <p className="font-display text-2xl text-white">
+                    {districtStats ? districtStats.length : 10}
+                  </p>
                   <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                     Districts Active
                   </p>

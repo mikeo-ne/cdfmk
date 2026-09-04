@@ -43,6 +43,28 @@ export function phoneKey(phone: string): string {
   return phone.replace(/\D/g, "");
 }
 
+/**
+ * E.164 form for database storage and Africa's Talking "to=" parameter,
+ * e.g. "+256772123456". Returns null for invalid Ugandan mobile numbers.
+ */
+export function e164UgandaPhone(input: string): string | null {
+  const digits = input.replace(/\D/g, "");
+  let national: string;
+  if (digits.startsWith("256") && digits.length === 12) national = "0" + digits.slice(3);
+  else if (digits.length === 9 && digits.startsWith("7")) national = "0" + digits;
+  else if (digits.length === 10 && digits.startsWith("07")) national = digits;
+  else return null;
+  if (!/^07\d{8}$/.test(national)) return null;
+  return `+256${national.slice(1)}`;
+}
+
+/** Convert a stored E.164 number into display form "+256 772 123 456". */
+export function formatDisplayFromE164(e164: string): string {
+  const m = e164.replace(/\D/g, "").slice(-9);
+  if (m.length !== 9) return e164;
+  return `+256 ${m.slice(0, 3)} ${m.slice(3, 6)} ${m.slice(6)}`;
+}
+
 /** Mask a display phone for public views: +256 7•• ••• 456 */
 export function maskPhone(phone: string): string {
   const digits = phone.replace(/\D/g, "").slice(-9); // last 9 = national without leading 0
