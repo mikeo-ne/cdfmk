@@ -24,14 +24,14 @@ export function Header({ view, onToggleView }: HeaderProps) {
         <button
           onClick={() => view === "admin" && onToggleView()}
           className="flex items-center gap-3 text-left"
-          aria-label="Muhoozi 2026 home"
+          aria-label="Muhoozi 2031 home"
         >
           <span className="flex h-10 w-10 items-center justify-center rounded-full bg-ugyellow text-ugblack shadow-lg">
             <ShieldCheck className="h-6 w-6" />
           </span>
           <span className="leading-tight">
             <span className="block font-display text-sm uppercase tracking-wider text-white sm:text-base">
-              Muhoozi <span className="text-gold-gradient">2026</span>
+              Muhoozi <span className="text-gold-gradient">2031</span>
             </span>
             <span className="hidden text-[11px] font-medium uppercase tracking-widest text-slate-400 sm:block">
               Endorsement &amp; Signature Portal

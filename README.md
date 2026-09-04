@@ -1,66 +1,108 @@
-# CDF Muhoozi 2026 — National Candidate Endorsement & Digital Signature Portal
+# CDF Muhoozi 2031 — National Candidate Endorsement & Digital Signature Portal
 
 A modern, mobile-first web application for the grassroots digital signature drive
-endorsing **CDF General Muhoozi Kainerugaba** for 2026. Built with Next.js (App
-Router), React, Tailwind CSS, and Lucide icons, using Ugandan flag colors
-(deep yellow, red, slate black) with gold accents.
+endorsing **CDF General Muhoozi Kainerugaba for 2031**. Built with Next.js (App
+Router), React, Tailwind CSS, Lucide icons, a **Supabase** backend
+(`supporters` + `signatures` tables), and **Africa's Talking** SMS for real OTP
+verification of Ugandan phone numbers.
+
+The app runs in two modes automatically:
+
+- **Live mode** — when Supabase + Africa's Talking credentials are set in
+  `.env.local`, endorsements are saved to Postgres and real OTP SMS are sent.
+- **Demo mode** — without credentials it runs fully client-side (localStorage)
+  with simulated SMS and test OTP code **1234**, so it works out of the box.
+
+## Quick start
+
+```bash
+npm install
+cp .env.local.example .env.local   # fill in keys to enable live mode
+npm run dev                         # http://localhost:3000
+npm run build && npm start          # production
+```
+
+## Backend setup
+
+### 1. Supabase database
+
+Run [`supabase/schema.sql`](supabase/schema.sql) in the Supabase SQL Editor. It
+creates:
+
+| Table                | Purpose                                                            |
+| -------------------- | ------------------------------------------------------------------ |
+| `supporters`         | One verified endorser per row; unique indexes on **NIN** and **phone** for anti-duplicate enforcement. |
+| `signatures`         | The attached digital signature as standalone SVG (`drawn` or `typed`), FK-linked to a supporter. |
+| `otp_verifications`  | OTP records (code stored as a SHA-256 hash only), attempts, expiry, gateway status. |
+| `supporters_with_signatures` (view) | Latest signature joined per supporter for the admin panel. |
+
+RLS is enabled on all tables; the API routes use the **service-role key**
+(server-side only), and the public anon key is intentionally granted no write
+access. All writes must pass OTP verification.
+
+Env vars required:
+
+```
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...      # server only
+```
+
+### 2. Africa's Talking SMS
+
+The OTP routes use the Africa's Talking Messaging API
+(`POST https://api.africastalking.com/version1/messaging`). Codes are
+cryptographically random 4 digits, expire after 5 minutes, and are rate-limited
+(30 s resend cooldown, max 5 attempts). Configure:
+
+```
+AT_USERNAME=sandbox          # use "sandbox" for testing
+AT_API_KEY=...
+AT_SENDER_ID=Muhoozi2031     # optional
+```
+
+Without these keys the app simulates the gateway and accepts demo code **1234**.
+
+## API routes
+
+| Method | Endpoint                | Description |
+| ------ | ----------------------- | ----------- |
+| GET    | `/api/endorsements`     | List endorsements (`?search=&status=&region=`), newest first. |
+| POST   | `/api/endorsements`     | Create a verified endorsement + signature. Requires an OTP token (`401` if missing, `409` on duplicate NIN/phone). |
+| POST   | `/api/otp/request`      | Generate a 4-digit OTP, store its hash, send SMS via Africa's Talking (returns `devCode` only in sandbox mode). |
+| POST   | `/api/otp/verify`       | Verify a code; returns a signed, time-limited token used by the POST above. |
+
+Server modules live in `lib/server/` (`store.ts` with Supabase + in-memory
+fallback, `sms.ts`, `otp.ts`, `supabaseAdmin.ts`).
 
 ## Features
 
 ### Public Portal
-- **Hero & live tally** — animating "Total Endorsements Captured: 148,920+" counter
-  with a live ticker of recent endorsers and a smooth-scroll "Endorse & Sign Now" CTA.
-- **Multi-step endorsement form**
-  1. **Supporter details** — full name, MTN/Airtel Uganda phone (`+256…`) with
-     automatic formatting/validation, 14-character NIN, district dropdown
-     (Kampala, Mbarara, Gulu, Jinja, Arua, Masaka, Mbale, Lira, Wakiso, Mukono),
-     and sub-county/village input with datalist hints.
-  2. **Touchscreen signature pad** — HTML5 canvas with pointer events (mouse +
-     touch + stylus), DPR-aware rendering, **Clear Canvas**, **Undo Last Stroke**,
-     and a **Toggle Typed Signature** mode (formal cursive SVG). Terms checkbox.
-  3. **SMS OTP verification (simulated)** — modal with a 4-box code input,
-     Africa's Talking resend timer (30 s), and demo code **`1234`**.
-- **Anti-duplicate logic** — NIN and phone number are validated against all stored
-  records; duplicates trigger a toast: *"This NIN has already submitted an
-  endorsement signature."*
-- **Supporter wall** — live feed of recent endorsers with masked name/phone/NIN,
-  district, relative timestamps, and signature thumbnails.
-- **Regional analytics** — chart and table views broken down by Central, Western,
-  Northern, and Eastern regions.
-- **USSD/SMS fallback notice** — feature-phone users are pointed to `*255#` / SMS `8226`.
+- **Hero & live tally** — animating "Total Endorsements Captured: 148,920+" with
+  live trickle ticker, a live/Demo mode status chip, and smooth-scroll CTA.
+- **3-step form**: supporter details (name, validated `+256` MTN/Airtel phone,
+  14-char NIN, district dropdown, sub-county) → touchscreen signature pad → SMS OTP.
+- **Signature pad** — DPR-aware HTML5 canvas with pointer events (finger/stylus/
+  mouse), undo/clear, typed-signature mode, serialized as crisp SVG.
+- **Anti-duplicate logic** enforced in the UI **and** by unique database indexes;
+  duplicates surface a toast ("This NIN has already submitted an endorsement
+  signature.") and a `409` API response.
+- **Supporter wall** — masked name/phone/NIN, district, relative timestamps,
+  signature thumbnails.
+- **Regional analytics** — chart/table for Central, Western, Northern, Eastern.
+- USSD `*255#` / SMS `8226` fallback notice for feature phones.
 
-### Admin Dashboard (toggle in the header)
-- Search by NIN, phone, name, district, or village.
-- Filter by verification status and region.
-- Attached **signature SVG preview** modal for every record.
-- **Export All Records to CSV** (respects active filters).
-- Stat cards for total / verified / pending records.
+### Admin Dashboard (header toggle)
+- Search by NIN/phone/name/district, status & region filters, signature SVG
+  preview modal, Supabase sync button, and **Export All Records to CSV**.
 
 ### Technical
-- **Persistence** — endorsements persist in `localStorage`; first visit is seeded
-  with 18 mock supporters so the wall is never empty.
-- **Reusable components** — `SignaturePad`, `VerificationModal`, `SupporterWall`,
+- Endorsements persist in **Supabase** (live mode) with localStorage as offline
+  cache/demo store; first visit is seeded with mock supporters.
+- Reusable components: `SignaturePad`, `VerificationModal`, `SupporterWall`,
   `AdminDashboard`, `Toaster`, `Header`, `Hero`, `EndorsementForm`, `Footer`.
-- Fully responsive with large touch targets; mobile gets a card-based admin view.
+- Fonts self-hosted via Fontsource (Anton display, Inter body, Dancing Script
+  for typed signatures).
 
-## Getting started
-
-```bash
-npm install
-npm run dev      # http://localhost:3000
-npm run build    # production build
-npm start        # serve production build
-```
-
-## Project structure
-
-```
-app/            # Next.js App Router (layout, page, global styles)
-components/     # UI components (form, canvas, modal, wall, admin, …)
-lib/            # types, district/region data, validation & formatting utils,
-                # signature SVG engine, localStorage store, seed data
-public/         # hero illustration
-```
-
-> Demo/simulation build: OTP, SMS gateway, and the national tally are simulated
-> client-side. No real personal data is transmitted.
+> OTP SMS, gateway delivery, and the national tally are simulated in demo mode.
+> Wire up Supabase and Africa's Talking env keys to run the real backend.

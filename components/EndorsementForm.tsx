@@ -29,6 +29,7 @@ import {
 import { SignaturePad, type SignaturePadHandle } from "./SignaturePad";
 import { VerificationModal } from "./VerificationModal";
 import { useToast } from "./Toaster";
+import { createEndorsement, isBackendEnabled } from "@/lib/api";
 
 interface EndorsementFormProps {
   endorsements: Endorsement[];
@@ -66,7 +67,7 @@ export function EndorsementForm({ endorsements, onSubmit }: EndorsementFormProps
   const [errors, setErrors] = useState<Partial<Record<keyof FormState, string>>>({});
   const [, setHasSignature] = useState(false);
   const [otpOpen, setOtpOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const duplicateKeys = useMemo(() => {
     const nins = new Set<string>();
@@ -171,28 +172,86 @@ export function EndorsementForm({ endorsements, onSubmit }: EndorsementFormProps
       setStep(1);
       return;
     }
-    setSubmitting(true);
-    setTimeout(() => {
-      setSubmitting(false);
-      setOtpOpen(true);
-    }, 700);
+    // The modal fires the /api/otp/request call itself (real Africa's Talking
+    // SMS) or simulates the flow in demo mode.
+    setOtpOpen(true);
   };
 
-  const handleVerified = () => {
+  const resetForm = () => {
+    setForm({ fullName: "", phone: "", nin: "", district: "", subCounty: "", terms: false });
+    setErrors({});
+    setHasSignature(false);
+    padRef.current?.clear();
+    setStep(1);
+  };
+
+  const handleVerified = async (token: string) => {
     const sig = padRef.current?.getSignature();
     if (!sig) {
       setOtpOpen(false);
       return;
     }
     const phone = normalizeUgandaPhone(form.phone)!;
+    const fullName = form.fullName.trim().replace(/\s+/g, " ");
+    const subCounty = form.subCounty.trim().replace(/\s+/g, " ");
+
+    // ---- Backend mode: persist through the Supabase-backed API ----
+    if (isBackendEnabled) {
+      setSaving(true);
+      try {
+        const { endorsement } = await createEndorsement({
+          fullName,
+          phone,
+          nin: normalizeNin(form.nin),
+          district: form.district,
+          subCounty,
+          signatureSvg: sig.svg,
+          signatureMode: sig.mode,
+          termsAccepted: true,
+          token,
+        });
+        onSubmit(endorsement);
+        setOtpOpen(false);
+        setSaving(false);
+        toast.success(
+          "Endorsement verified and captured!",
+          `Thank you, ${endorsement.fullName.split(" ")[0]} — your signature is saved to the national register.`
+        );
+        resetForm();
+        setTimeout(
+          () => document.getElementById("wall")?.scrollIntoView({ behavior: "smooth" }),
+          600
+        );
+      } catch (err) {
+        setSaving(false);
+        const e = err as Error & { status?: number; fields?: Record<string, string> };
+        if (e.status === 409) {
+          setOtpOpen(false);
+          setStep(1);
+          toast.error("Duplicate detected", e.message);
+        } else if (e.status === 401) {
+          toast.error("Verification expired", "Please verify your phone number again.");
+        } else if (e.fields) {
+          setErrors(e.fields as Partial<Record<keyof FormState, string>>);
+          setOtpOpen(false);
+          setStep(1);
+          toast.error("Please correct the highlighted fields");
+        } else {
+          toast.error("Submission failed", e.message || "Please try again.");
+        }
+      }
+      return;
+    }
+
+    // ---- Demo mode: build the record locally (localStorage) ----
     const record: Endorsement = {
       id: uid(),
-      fullName: form.fullName.trim().replace(/\s+/g, " "),
+      fullName,
       phone,
       nin: normalizeNin(form.nin),
       district: form.district,
       region: regionForDistrict(form.district),
-      subCounty: form.subCounty.trim().replace(/\s+/g, " "),
+      subCounty,
       signatureSvg: sig.svg,
       signatureMode: sig.mode,
       termsAccepted: true,
@@ -205,12 +264,7 @@ export function EndorsementForm({ endorsements, onSubmit }: EndorsementFormProps
       "Endorsement verified and captured!",
       `Thank you, ${record.fullName.split(" ")[0]} — your signature is now part of the national tally.`
     );
-    // Reset the form for the next supporter
-    setForm({ fullName: "", phone: "", nin: "", district: "", subCounty: "", terms: false });
-    setErrors({});
-    setHasSignature(false);
-    padRef.current?.clear();
-    setStep(1);
+    resetForm();
     setTimeout(
       () => document.getElementById("wall")?.scrollIntoView({ behavior: "smooth" }),
       600
@@ -454,7 +508,7 @@ export function EndorsementForm({ endorsements, onSubmit }: EndorsementFormProps
                 />
                 <span className="text-sm leading-relaxed text-slate-200">
                   I hereby confirm my support and authorize my digital signature for candidate
-                  endorsement of <strong>CDF General Muhoozi Kainerugaba</strong> for the 2026
+                  endorsement of <strong>CDF General Muhoozi Kainerugaba</strong> for the 2031
                   national leadership journey.
                 </span>
               </label>
@@ -464,8 +518,8 @@ export function EndorsementForm({ endorsements, onSubmit }: EndorsementFormProps
                 <button onClick={() => setStep(1)} className="btn-ghost flex-1">
                   <ArrowLeft className="h-5 w-5" /> Back to Details
                 </button>
-                <button onClick={requestOtp} disabled={submitting} className="btn-red flex-1 text-lg">
-                  {submitting ? "Preparing verification…" : "Submit Endorsement"}
+                <button onClick={requestOtp} className="btn-red flex-1 text-lg">
+                  Submit Endorsement
                   <ShieldCheck className="h-5 w-5" />
                 </button>
               </div>
@@ -478,8 +532,22 @@ export function EndorsementForm({ endorsements, onSubmit }: EndorsementFormProps
           phone={normalizeUgandaPhone(form.phone) ?? form.phone}
           fullName={form.fullName}
           onVerified={handleVerified}
-          onClose={() => setOtpOpen(false)}
+          onClose={() => {
+            if (!saving) setOtpOpen(false);
+          }}
         />
+
+        {saving && (
+          <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+            <div className="flex flex-col items-center gap-4 rounded-2xl border border-ugyellow/30 bg-ink px-8 py-8">
+              <ShieldCheck className="h-12 w-12 animate-pulse text-ugyellow" />
+              <p className="font-display text-lg uppercase tracking-wide text-white">
+                Saving to National Register…
+              </p>
+              <p className="text-sm text-slate-400">Securing your endorsement in the database.</p>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );

@@ -15,7 +15,7 @@ export function Footer() {
               </span>
               <div>
                 <p className="font-display text-lg uppercase text-white">
-                  Muhoozi <span className="text-gold-gradient">2026</span>
+                  Muhoozi <span className="text-gold-gradient">2031</span>
                 </p>
                 <p className="text-xs uppercase tracking-widest text-slate-500">
                   Endorsement Portal
@@ -24,7 +24,7 @@ export function Footer() {
             </div>
             <p className="mt-4 text-sm leading-relaxed text-slate-400">
               The official grassroots digital signature drive endorsing CDF General Muhoozi
-              Kainerugaba for 2026. One Uganda, one mission.
+              Kainerugaba for 2031. One Uganda, one mission.
             </p>
           </div>
 
@@ -63,7 +63,7 @@ export function Footer() {
         </div>
 
         <div className="mt-10 flex flex-col items-center justify-between gap-3 border-t border-white/10 pt-6 text-xs text-slate-500 sm:flex-row">
-          <p>© 2026 Muhoozi National Mobilization. A demonstration endorsement platform.</p>
+          <p>© 2031 Muhoozi National Mobilization. A demonstration endorsement platform.</p>
           <p className="flex items-center gap-2">
             <span className="inline-block h-2.5 w-2.5 rounded-sm bg-ugblack ring-1 ring-white/20" />
             <span className="inline-block h-2.5 w-2.5 rounded-sm bg-ugyellow" />

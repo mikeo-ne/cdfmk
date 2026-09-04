@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Search,
   Download,
@@ -10,6 +10,9 @@ import {
   Users,
   CheckCircle2,
   PenLine,
+  RefreshCw,
+  Database,
+  HardDrive,
 } from "lucide-react";
 import type { Endorsement, VerificationStatus } from "@/lib/types";
 import { REGIONS } from "@/lib/data";
@@ -23,19 +26,36 @@ import {
 } from "@/lib/utils";
 import { svgToDataUrl } from "@/lib/signature";
 import { useToast } from "./Toaster";
+import { fetchEndorsements, isBackendEnabled } from "@/lib/api";
 
 interface AdminDashboardProps {
   endorsements: Endorsement[];
+  onRefresh?: (rows: Endorsement[]) => void;
 }
 
 type StatusFilter = "all" | VerificationStatus;
 
-export function AdminDashboard({ endorsements }: AdminDashboardProps) {
+export function AdminDashboard({ endorsements, onRefresh }: AdminDashboardProps) {
   const toast = useToast();
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [region, setRegion] = useState<string>("all");
   const [preview, setPreview] = useState<Endorsement | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  const syncServer = useCallback(async () => {
+    if (!isBackendEnabled) return;
+    setSyncing(true);
+    try {
+      const { endorsements: rows } = await fetchEndorsements();
+      onRefresh?.(rows);
+      toast.success("Register synced", `${rows.length} records loaded from the database.`);
+    } catch (err) {
+      toast.error("Sync failed", err instanceof Error ? err.message : "Could not reach the database.");
+    } finally {
+      setSyncing(false);
+    }
+  }, [onRefresh, toast]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toUpperCase();
@@ -71,7 +91,7 @@ export function AdminDashboard({ endorsements }: AdminDashboardProps) {
     }
     const csv = endorsementsToCsv(filtered);
     const stamp = new Date().toISOString().slice(0, 10);
-    downloadCsv(`muhoozi-2026-endorsements-${stamp}.csv`, csv);
+    downloadCsv(`muhoozi-2031-endorsements-${stamp}.csv`, csv);
     toast.success("CSV exported", `${filtered.length} endorsement records downloaded.`);
   };
 
@@ -85,15 +105,44 @@ export function AdminDashboard({ endorsements }: AdminDashboardProps) {
           <h2 className="mt-2 font-display text-3xl uppercase tracking-tight text-white sm:text-4xl">
             Admin <span className="text-gold-gradient">Control Panel</span>
           </h2>
-          <p className="mt-2 text-sm text-slate-400">
-            Search, verify and export the full endorsement register. All records are stored locally
-            in this deployment.
+          <p className="mt-2 flex flex-wrap items-center gap-2 text-sm text-slate-400">
+            Search, verify and export the full endorsement register.
+            <span
+              className={classNames(
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase",
+                isBackendEnabled
+                  ? "bg-green-500/15 text-green-400"
+                  : "bg-slate-500/15 text-slate-400"
+              )}
+            >
+              {isBackendEnabled ? (
+                <>
+                  <Database className="h-3 w-3" /> Supabase live
+                </>
+              ) : (
+                <>
+                  <HardDrive className="h-3 w-3" /> Local demo
+                </>
+              )}
+            </span>
           </p>
         </div>
-        <button onClick={exportCsv} className="btn-primary shrink-0">
-          <Download className="h-5 w-5" />
-          Export All Records to CSV
-        </button>
+        <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+          {isBackendEnabled && (
+            <button onClick={syncServer} disabled={syncing} className="btn-ghost">
+              {syncing ? (
+                <RefreshCw className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              Sync DB
+            </button>
+          )}
+          <button onClick={exportCsv} className="btn-primary">
+            <Download className="h-5 w-5" />
+            Export All Records to CSV
+          </button>
+        </div>
       </div>
 
       {/* Stat cards */}

@@ -9,14 +9,14 @@ import "@fontsource/dancing-script/700.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CDF Muhoozi 2026 — National Candidate Endorsement & Digital Signature Portal",
+  title: "CDF Muhoozi 2031 — National Candidate Endorsement & Digital Signature Portal",
   description:
-    "Stand with CDF General Muhoozi Kainerugaba. Add your digital signature endorsement for 2026 — secure, grassroots-driven, official mobilization portal for Uganda.",
+    "Stand with CDF General Muhoozi Kainerugaba. Add your digital signature endorsement for 2031 — secure, grassroots-driven, official mobilization portal for Uganda.",
   keywords: [
     "Muhoozi",
     "Kainerugaba",
     "CDF",
-    "Uganda 2026",
+    "Uganda 2031",
     "endorsement",
     "digital signature",
     "campaign",

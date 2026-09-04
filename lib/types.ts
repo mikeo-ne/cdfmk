@@ -35,3 +35,50 @@ export interface ToastMessage {
   title: string;
   description?: string;
 }
+
+/* ---------------- API request / response payloads ---------------- */
+
+export interface OtpRequestPayload {
+  phone: string;
+  fullName?: string;
+}
+
+export interface OtpRequestResponse {
+  ok: boolean;
+  /** True when an SMS was dispatched through Africa's Talking. */
+  smsSent?: boolean;
+  /** Present only in demo/sandbox mode so the UI can show the test code. */
+  devCode?: string;
+  cooldownSeconds?: number;
+  error?: string;
+}
+
+export interface OtpVerifyPayload {
+  phone: string;
+  code: string;
+}
+
+export interface OtpVerifyResponse {
+  ok: boolean;
+  /** Short-lived verification token required to create the endorsement. */
+  token?: string;
+  error?: string;
+}
+
+export interface EndorsementCreatePayload {
+  fullName: string;
+  phone: string;
+  nin: string;
+  district: string;
+  subCounty: string;
+  signatureSvg: string;
+  signatureMode: "drawn" | "typed";
+  termsAccepted: boolean;
+  /** Verification token from /api/otp/verify (real mode). */
+  token?: string;
+}
+
+export interface EndorsementListResponse {
+  endorsements: Endorsement[];
+  source: "supabase" | "demo";
+}

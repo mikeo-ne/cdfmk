@@ -3,7 +3,7 @@
 import type { Endorsement } from "./types";
 import { buildSeedEndorsements } from "./seeds";
 
-const STORAGE_KEY = "cdfmk.endorsements.v1";
+const STORAGE_KEY = "cdfmk.endorsements.v2";
 
 /**
  * Load endorsements from LocalStorage. On first visit the store is seeded

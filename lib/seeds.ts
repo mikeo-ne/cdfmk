@@ -56,8 +56,8 @@ function makePhone(rand: () => number): string {
 
 export function buildSeedEndorsements(now = Date.now()): Endorsement[] {
   return SEED_PEOPLE.map((p, i) => {
-    const rand = mulberry32(20260 + i * 977);
-    const strokes = mockStrokesForName(p.name, 20260 + i * 977);
+    const rand = mulberry32(20310 + i * 977);
+    const strokes = mockStrokesForName(p.name, 20310 + i * 977);
     const signatureSvg = strokesToSvg(strokes, {
       idPrefix: `seed${i}`,
       strokeWidth: 2.2,

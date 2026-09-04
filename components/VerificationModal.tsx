@@ -1,18 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ShieldCheck, MessageSquareText, RefreshCw, X, Loader2, LockKeyhole } from "lucide-react";
 import { maskPhone } from "@/lib/utils";
+import { isBackendEnabled, requestOtp, verifyOtp } from "@/lib/api";
+import { DEMO_OTP_CODE } from "@/lib/config";
 
 interface VerificationModalProps {
   open: boolean;
   phone: string;
   fullName: string;
-  onVerified: () => void;
+  /** Called with a signed verification token after the code is accepted. */
+  onVerified: (token: string) => void;
   onClose: () => void;
 }
 
-const DEMO_CODE = "1234";
 const RESEND_SECONDS = 30;
 
 export function VerificationModal({
@@ -28,23 +30,48 @@ export function VerificationModal({
   const [sending, setSending] = useState(false);
   const [cooldown, setCooldown] = useState(RESEND_SECONDS);
   const [resentCount, setResentCount] = useState(0);
+  const [smsSent, setSmsSent] = useState(false);
+  const [autoVerifying, setAutoVerifying] = useState(false);
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
 
   const code = digits.join("");
 
-  // Reset state whenever the modal opens
+  // Reset state whenever the modal opens and (in backend mode) request the OTP.
   useEffect(() => {
-    if (open) {
-      setDigits(["", "", "", ""]);
-      setError(null);
-      setVerifying(false);
-      setSending(false);
-      setCooldown(RESEND_SECONDS);
-      setResentCount(0);
-      const t = setTimeout(() => inputsRef.current[0]?.focus(), 250);
-      return () => clearTimeout(t);
+    if (!open) return;
+    let cancelled = false;
+    setDigits(["", "", "", ""]);
+    setError(null);
+    setVerifying(false);
+    setSending(false);
+    setCooldown(RESEND_SECONDS);
+    setResentCount(0);
+    setSmsSent(false);
+    setAutoVerifying(false);
+    const focusT = setTimeout(() => inputsRef.current[0]?.focus(), 300);
+
+    if (isBackendEnabled) {
+      setSending(true);
+      requestOtp(phone)
+        .then((res) => {
+          if (cancelled) return;
+          setSending(false);
+          setSmsSent(Boolean(res.smsSent));
+          if (res.cooldownSeconds) setCooldown(res.cooldownSeconds);
+        })
+        .catch((err: Error) => {
+          if (cancelled) return;
+          setSending(false);
+          setError(err.message || "Could not send the SMS code. You may retry.");
+        });
     }
-  }, [open]);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(focusT);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, phone]);
 
   // Resend cooldown timer
   useEffect(() => {
@@ -53,45 +80,88 @@ export function VerificationModal({
     return () => clearInterval(t);
   }, [open, cooldown]);
 
-  // Auto-verify when 4 digits entered
+  const verify = useCallback(
+    async (value: string) => {
+      setError(null);
+      setVerifying(true);
+
+      const accept = (token: string) => {
+        setVerifying(false);
+        onVerified(token);
+      };
+
+      if (isBackendEnabled) {
+        try {
+          const res = await verifyOtp(phone, value);
+          if (res.ok && res.token) {
+            accept(res.token);
+          } else {
+            throw new Error(res.error || "Verification failed.");
+          }
+        } catch (err) {
+          setVerifying(false);
+          setError(err instanceof Error ? err.message : "Verification failed. Try again.");
+          setDigits(["", "", "", ""]);
+          inputsRef.current[0]?.focus();
+        }
+        return;
+      }
+
+      // Demo (simulated) gateway — local round-trip.
+      setTimeout(() => {
+        if (value === DEMO_OTP_CODE) {
+          accept(`demo-${DEMO_OTP_CODE}`);
+        } else {
+          setVerifying(false);
+          setError("Incorrect code. Please check the SMS and try again.");
+          setDigits(["", "", "", ""]);
+          inputsRef.current[0]?.focus();
+        }
+      }, 700);
+    },
+    [onVerified, phone]
+  );
+
+  // Auto-verify when 4 digits are entered
   useEffect(() => {
-    if (code.length === 4 && !verifying) {
-      verify(code);
+    if (code.length === 4 && !verifying && !autoVerifying) {
+      setAutoVerifying(true);
+      void verify(code);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
-  const verify = (value: string) => {
+  const resend = async () => {
+    if (cooldown > 0 || sending) return;
     setError(null);
-    setVerifying(true);
-    // Simulated gateway round-trip
-    setTimeout(() => {
-      if (value === DEMO_CODE) {
-        setVerifying(false);
-        onVerified();
-      } else {
-        setVerifying(false);
-        setError("Incorrect code. Please check the SMS and try again.");
+    if (!isBackendEnabled) {
+      setSending(true);
+      setTimeout(() => {
+        setSending(false);
+        setResentCount((n) => n + 1);
+        setCooldown(RESEND_SECONDS);
         setDigits(["", "", "", ""]);
         inputsRef.current[0]?.focus();
-      }
-    }, 900);
-  };
-
-  const resend = () => {
-    if (cooldown > 0 || sending) return;
+      }, 700);
+      return;
+    }
     setSending(true);
-    setTimeout(() => {
+    try {
+      const res = await requestOtp(phone);
       setSending(false);
       setResentCount((n) => n + 1);
-      setCooldown(RESEND_SECONDS);
+      setCooldown(res.cooldownSeconds ?? RESEND_SECONDS);
+      setSmsSent(Boolean(res.smsSent));
       setDigits(["", "", "", ""]);
-      setError(null);
       inputsRef.current[0]?.focus();
-    }, 800);
+    } catch (err) {
+      setSending(false);
+      setError(err instanceof Error ? err.message : "Resend failed. Try again shortly.");
+    }
   };
 
   const handleChange = (i: number, raw: string) => {
+    setAutoVerifying(false);
     const val = raw.replace(/\D/g, "");
     if (!val) {
       setDigits((d) => {
@@ -101,7 +171,6 @@ export function VerificationModal({
       });
       return;
     }
-    // Support paste of full code
     if (val.length > 1) {
       const chars = val.slice(0, 4).split("");
       setDigits((d) => {
@@ -121,9 +190,7 @@ export function VerificationModal({
   };
 
   const handleKeyDown = (i: number, e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Backspace" && !digits[i] && i > 0) {
-      inputsRef.current[i - 1]?.focus();
-    }
+    if (e.key === "Backspace" && !digits[i] && i > 0) inputsRef.current[i - 1]?.focus();
     if (e.key === "ArrowLeft" && i > 0) inputsRef.current[i - 1]?.focus();
     if (e.key === "ArrowRight" && i < 3) inputsRef.current[i + 1]?.focus();
   };
@@ -132,7 +199,7 @@ export function VerificationModal({
 
   return (
     <div
-      className="fixed inset-0 z-[90] flex items-end justify-center bg-black/70 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      className="fixed inset-0 z-[90] flex items-end justify-center bg-black/70 backdrop-blur-sm sm:items-center sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label="SMS verification"
@@ -166,8 +233,9 @@ export function VerificationModal({
           </div>
 
           <p className="mt-5 text-sm leading-relaxed text-slate-300">
-            <span className="font-semibold text-white">{fullName.split(" ")[0]}</span>, a 4-digit
-            verification code was sent via <span className="font-semibold text-ugyellow">Africa&apos;s Talking SMS</span> to{" "}
+            <span className="font-semibold text-white">{fullName.split(" ")[0] || "Supporter"}</span>,
+            a 4-digit verification code was sent via{" "}
+            <span className="font-semibold text-ugyellow">Africa&apos;s Talking SMS</span> to{" "}
             <span className="font-semibold text-white">{maskPhone(phone)}</span>. Enter it below to
             finalize your digital signature.
           </p>
@@ -185,7 +253,7 @@ export function VerificationModal({
                 value={d}
                 onChange={(e) => handleChange(i, e.target.value)}
                 onKeyDown={(e) => handleKeyDown(i, e)}
-                disabled={verifying}
+                disabled={verifying || sending}
                 className="otp-input"
                 aria-label={`Digit ${i + 1}`}
               />
@@ -204,18 +272,46 @@ export function VerificationModal({
               registry…
             </p>
           )}
+          {sending && !verifying && (
+            <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-slate-300">
+              <Loader2 className="h-4 w-4 animate-spin" /> Sending your code via Africa&apos;s
+              Talking SMS…
+            </p>
+          )}
 
           <div className="mt-6 rounded-xl border border-white/10 bg-white/5 p-4">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
               <MessageSquareText className="h-4 w-4 text-ugyellow" />
-              {sending ? "Sending SMS…" : resentCount > 0 ? `Code resent (${resentCount})` : "Demo gateway notice"}
+              {sending
+                ? "Dispatching SMS…"
+                : smsSent
+                  ? resentCount > 0
+                    ? `Code resent via SMS (${resentCount})`
+                    : "SMS dispatched"
+                  : "Sandbox / demo gateway"}
             </div>
             <p className="mt-1.5 text-xs leading-relaxed text-slate-400">
-              This is a simulated flow. Use code{" "}
-              <span className="rounded bg-ugyellow px-1.5 py-0.5 font-display text-sm tracking-widest text-ugblack">
-                {DEMO_CODE}
-              </span>{" "}
-              to verify. Standard SMS rates apply on the live Africa&apos;s Talking gateway.
+              {isBackendEnabled ? (
+                smsSent ? (
+                  <>
+                    A real SMS was sent through <strong>Africa&apos;s Talking</strong>. Standard
+                    network rates apply. If no SMS arrives, use resend or check the gateway logs.
+                  </>
+                ) : (
+                  <>
+                    Connected to the live gateway. OTPs are 4 digits and expire after 5 minutes.
+                  </>
+                )
+              ) : (
+                <>
+                  This is a simulated flow (no SMS gateway configured). Use code{" "}
+                  <span className="rounded bg-ugyellow px-1.5 py-0.5 font-display text-sm tracking-widest text-ugblack">
+                    {DEMO_OTP_CODE}
+                  </span>{" "}
+                  to verify. Add Africa&apos;s Talking credentials to <code>.env.local</code> to
+                  send real SMS.
+                </>
+              )}
             </p>
           </div>
 
@@ -224,11 +320,7 @@ export function VerificationModal({
             disabled={cooldown > 0 || sending}
             className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-white/15 py-3 text-sm font-bold text-slate-200 transition-all hover:border-ugyellow/50 hover:text-ugyellow disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {sending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
+            {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             {cooldown > 0
               ? `Resend code via Africa's Talking in ${cooldown}s`
               : "Resend code via Africa's Talking"}

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { PenLine, Radio, MapPin, Users } from "lucide-react";
 import type { Endorsement } from "@/lib/types";
 import { TALLY_BASELINE } from "@/lib/storage";
-import { maskName, timeAgo } from "@/lib/utils";
+import { classNames, maskName, timeAgo } from "@/lib/utils";
 import { useMounted } from "@/lib/useMounted";
 
 /** Animated count-up number. */
@@ -35,9 +35,11 @@ function useCountUp(target: number, duration = 1400): number {
 
 interface HeroProps {
   endorsements: Endorsement[];
+  backendEnabled?: boolean;
+  source?: "supabase" | "demo" | null;
 }
 
-export function Hero({ endorsements }: HeroProps) {
+export function Hero({ endorsements, backendEnabled = false, source = null }: HeroProps) {
   // Live tally: baseline + stored records + a "simulated live trickle" that
   // grows a few endorsements every few seconds, like a real campaign feed.
   const [liveTrickle, setLiveTrickle] = useState(0);
@@ -87,20 +89,20 @@ export function Hero({ endorsements }: HeroProps) {
               <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-ugred" />
             </span>
             <span className="text-xs font-bold uppercase tracking-widest text-ugyellow">
-              Official Grassroots Mobilization · 2026
+              Official Grassroots Mobilization · 2031
             </span>
           </div>
 
           <h1 className="font-display text-4xl uppercase leading-[1.02] tracking-tight text-white sm:text-5xl lg:text-6xl">
             Stand with <span className="text-gold-gradient">CDF Muhoozi</span>
             <span className="mt-2 block text-2xl text-slate-200 sm:text-3xl lg:text-4xl">
-              Add Your Signature for 2026
+              Add Your Signature for 2031
             </span>
           </h1>
 
           <p className="mt-5 max-w-xl text-base leading-relaxed text-slate-300 sm:text-lg">
             Join hundreds of thousands of Ugandans endorsing{" "}
-            <strong className="text-white">General Muhoozi Kainerugaba</strong> for the 2026
+            <strong className="text-white">General Muhoozi Kainerugaba</strong> for the 2031
             leadership journey. Add your verified digital signature — secure, official, and
             counted in real time across every region of Uganda.
           </p>
@@ -110,6 +112,27 @@ export function Hero({ endorsements }: HeroProps) {
             <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-400">
               <Radio className="h-4 w-4 text-ugred" />
               Live National Tally
+              <span
+                className={classNames(
+                  "ml-auto inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-normal",
+                  backendEnabled
+                    ? "bg-green-500/15 text-green-400"
+                    : "bg-slate-500/15 text-slate-400"
+                )}
+                title={
+                  backendEnabled
+                    ? "Connected to live Supabase database + Africa's Talking SMS"
+                    : "Demo mode: localStorage + simulated SMS (code 1234). Add Supabase & AT keys to go live."
+                }
+              >
+                <span
+                  className={classNames(
+                    "h-1.5 w-1.5 rounded-full",
+                    backendEnabled ? "bg-green-400 animate-pulse" : "bg-slate-400"
+                  )}
+                />
+                {backendEnabled ? (source === "supabase" ? "Live DB" : "Connecting…") : "Demo Mode"}
+              </span>
             </div>
             <div className="mt-1 font-display text-4xl text-ugyellow sm:text-5xl">
               {shown.toLocaleString("en-US")}
@@ -146,7 +169,7 @@ export function Hero({ endorsements }: HeroProps) {
           </div>
 
           <p className="mt-4 text-xs text-slate-500">
-            Free to sign · Your data is stored securely and used solely for the 2026 endorsement
+            Free to sign · Your data is stored securely and used solely for the 2031 endorsement
             register.
           </p>
         </div>
@@ -157,14 +180,14 @@ export function Hero({ endorsements }: HeroProps) {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src="/hero-patriotic.png"
-              alt="Patriotic campaign illustration for CDF Muhoozi 2026"
+              alt="Patriotic campaign illustration for CDF Muhoozi 2031"
               className="aspect-[4/5] w-full object-cover"
             />
             <div className="absolute inset-0 bg-gradient-to-t from-ugblack via-transparent to-transparent" />
             <div className="absolute inset-x-0 bottom-0 p-5">
               <div className="flag-stripe mb-3 h-1 rounded-full opacity-80" />
               <p className="font-display text-lg uppercase tracking-wide text-white">
-                One Uganda · One Mission · 2026
+                One Uganda · One Mission · 2031
               </p>
             </div>
           </div>
